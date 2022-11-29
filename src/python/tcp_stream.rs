@@ -29,6 +29,27 @@ pub struct TcpStream {
     pub(super) is_closing: bool,
 }
 
+impl TcpStream {
+    pub async fn new(stream_event_tx: mpsc::UnboundedSender<TransportCommand>, src_addr: SocketAddr, dst_addr: SocketAddr) -> PyResult<TcpStream> {
+        let (tx, rx) = oneshot::channel();
+
+        stream_event_tx
+            .send(TransportCommand::NewConnection { src_addr, dst_addr, tx })
+            .map_err(event_queue_unavailable)?;
+
+        let connection_id = rx.await.map_err(connection_exists)?;
+        Ok(TcpStream {
+            connection_id,
+            event_tx: stream_event_tx,
+            peername: dst_addr,
+            sockname: src_addr,
+            original_dst: dst_addr,
+            original_src: src_addr,
+            is_closing: false,
+        })
+    }
+}
+
 #[pymethods]
 impl TcpStream {
     /// Read up to `n` bytes from the TCP stream.
@@ -141,4 +162,8 @@ pub fn event_queue_unavailable(_: SendError<TransportCommand>) -> PyErr {
 
 pub fn connection_closed(_: RecvError) -> PyErr {
     PyOSError::new_err("connection closed")
+}
+
+pub fn connection_exists(_: RecvError) -> PyErr {
+    PyOSError::new_err("connection with this tuple already exists")
 }

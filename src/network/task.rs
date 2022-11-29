@@ -326,6 +326,13 @@ impl NetworkIO {
             } => {
                 self.send_datagram(data, src_addr, dst_addr);
             }
+            TransportCommand::NewConnection {
+                src_addr,
+                dst_addr,
+                tx,
+            } => {
+                self.new_connection(src_addr, dst_addr, tx)
+            }
         }
     }
 
@@ -347,6 +354,45 @@ impl NetworkIO {
                 }
             }
         }
+    }
+    fn new_connection(&mut self, src_addr: SocketAddr, dst_addr: SocketAddr, tx: oneshot::Sender<ConnectionId>) {
+        if self.active_connections.insert((dst_addr, src_addr)) {
+            let socket = TcpSocket::new(
+                TcpSocketBuffer::new(vec![0u8; 64 * 1024]),
+                TcpSocketBuffer::new(vec![0u8; 64 * 1024]),
+            );
+
+            let handle = self.iface.add_socket(socket);
+            let (socket, context) = self.iface.get_socket_and_context::<TcpSocket>(handle);
+
+            match socket.connect(context, dst_addr, src_addr) {
+                Ok(_) => (),
+                Err(e) => {
+                    log::error!("smoltcp listen error: {}", e);
+                    return
+                }
+            };
+            socket.set_timeout(Some(Duration::from_secs(60)));
+            socket.set_keep_alive(Some(Duration::from_secs(28)));
+
+            let connection_id = self.next_connection_id;
+            self.next_connection_id += 1;
+
+            let data = SocketData {
+                handle,
+                send_buffer: VecDeque::new(),
+                write_eof: false,
+                recv_waiter: None,
+                drain_waiter: Vec::new(),
+                addr_tuple: (dst_addr, src_addr),
+            };
+            self.socket_data.insert(connection_id, data);
+
+            if tx.send(connection_id).is_err() {
+                log::debug!("Cannot send connection id, channel already closed.");
+            }
+        }
+        // otherwise, just drop tx without sending a connection id
     }
 }
 

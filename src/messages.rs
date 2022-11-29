@@ -50,6 +50,11 @@ pub enum TransportCommand {
         src_addr: SocketAddr,
         dst_addr: SocketAddr,
     },
+    NewConnection {
+        src_addr: SocketAddr,
+        dst_addr: SocketAddr,
+        tx: oneshot::Sender<ConnectionId>
+    }
 }
 
 /// Generic IPv4/IPv6 packet type that wraps both IPv4 and IPv6 packet buffers

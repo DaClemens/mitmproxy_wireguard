@@ -15,7 +15,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::messages::TransportCommand;
 use crate::network::NetworkTask;
-use crate::python::{event_queue_unavailable, py_to_socketaddr, socketaddr_to_py, PyInteropTask};
+use crate::python::{event_queue_unavailable, py_to_socketaddr, socketaddr_to_py, PyInteropTask, TcpStream};
 use crate::shutdown::ShutdownTask;
 use crate::util::string_to_key;
 use crate::wireguard::WireGuardTaskBuilder;
@@ -43,6 +43,28 @@ pub struct Server {
 
 #[pymethods]
 impl Server {
+    pub fn new_connection<'p>(
+        &self,
+        py: Python<'p>,
+        src_addr: &PyTuple,
+        dst_addr: &PyTuple,
+    ) -> PyResult<&'p PyAny> {
+        let src_addr = py_to_socketaddr(src_addr)?;
+        let dst_addr = py_to_socketaddr(dst_addr)?;
+
+        let stream_event_tx = self.event_tx.clone();
+
+        pyo3_asyncio::tokio::future_into_py(py, async move {
+            let stream = TcpStream::new(stream_event_tx, src_addr, dst_addr).await?;
+
+            Python::with_gil(|py| -> PyResult<PyObject> {
+                let stream = stream.into_py(py);
+
+                Ok(stream)
+            })
+        })
+    }
+
     /// Send an individual UDP datagram using the specified source and destination addresses.
     ///
     /// The `src_addr` and `dst_addr` arguments are expected to be `(host: str, port: int)` tuples.
