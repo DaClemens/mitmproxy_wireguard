@@ -76,6 +76,7 @@ impl WireGuardTaskBuilder {
         &mut self,
         public_key: PublicKey,
         preshared_key: Option<[u8; 32]>,
+        endpoint: Option<SocketAddr>,
     ) -> Result<()> {
         let index = self.peers_by_idx.len() as u32;
 
@@ -91,7 +92,7 @@ impl WireGuardTaskBuilder {
 
         let peer = Arc::new(WireGuardPeer {
             tunnel,
-            endpoint: RwLock::new(None),
+            endpoint: RwLock::new(endpoint),
         });
 
         self.peers_by_idx.insert(index, peer.clone());

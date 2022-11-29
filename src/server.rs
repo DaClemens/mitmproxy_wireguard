@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use pyo3::{prelude::*, types::PyTuple};
+use pyo3::exceptions::PyValueError;
 use tokio::{
     net::UdpSocket,
     sync::broadcast::{self, Sender as BroadcastSender},
@@ -104,6 +106,7 @@ impl Server {
         port: u16,
         private_key: StaticSecret,
         peer_public_keys: Vec<PublicKey>,
+        peer_endpoints: Vec<Option<SocketAddr>>,
         py_tcp_handler: PyObject,
         py_udp_handler: PyObject,
     ) -> Result<Self> {
@@ -155,8 +158,8 @@ impl Server {
             smol_to_wg_rx,
             sd_trigger.subscribe(),
         );
-        for key in peer_public_keys {
-            wg_task_builder.add_peer(key, None)?;
+        for (key, endpoint) in peer_public_keys.into_iter().zip(peer_endpoints.into_iter()) {
+            wg_task_builder.add_peer(key, None, endpoint)?;
         }
         let wg_task = wg_task_builder.build()?;
 
@@ -225,6 +228,7 @@ impl Drop for Server {
 /// - `port`: The listen port for the WireGuard server. The default port for WireGuard is `51820`.
 /// - `private_key`: The private X25519 key for the WireGuard server as a base64-encoded string.
 /// - `peer_public_keys`: List of public X25519 keys for WireGuard peers as base64-encoded strings.
+/// - `peer_endpoints`: List of default endpoints for WireGuard peers. Each element must be present, but can be None.
 /// - `handle_connection`: A coroutine that will be called for each new `TcpStream`.
 /// - `receive_datagram`: A function that will be called for each received UDP datagram.
 ///
@@ -240,6 +244,7 @@ pub fn start_server(
     port: u16,
     private_key: String,
     peer_public_keys: Vec<String>,
+    peer_endpoints: Vec<Option<String>>,
     handle_connection: PyObject,
     receive_datagram: PyObject,
 ) -> PyResult<&PyAny> {
@@ -250,12 +255,30 @@ pub fn start_server(
         .map(string_to_key)
         .collect::<PyResult<Vec<PublicKey>>>()?;
 
+    let peer_endpoints = peer_endpoints
+        .into_iter()
+        .map(|endpoint| -> PyResult<Option<SocketAddr>> {
+            match endpoint {
+                Some(s) => Ok(Some(
+                    SocketAddr::from_str(&s)
+                        .map_err(|_| PyValueError::new_err("Invalid endpoint."))?
+                )),
+                None => Ok(None)
+            }
+        })
+        .collect::<PyResult<Vec<Option<SocketAddr>>>>()?;
+
+    if peer_public_keys.len() != peer_endpoints.len() {
+        return Err(PyValueError::new_err("Peer public key and endpoint lists don't match"))
+    }
+
     pyo3_asyncio::tokio::future_into_py(py, async move {
         let server = Server::init(
             host,
             port,
             private_key,
             peer_public_keys,
+            peer_endpoints,
             handle_connection,
             receive_datagram,
         )
