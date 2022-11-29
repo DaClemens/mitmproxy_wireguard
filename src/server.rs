@@ -1,5 +1,4 @@
-use std::net::SocketAddr;
-use std::str::FromStr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -282,7 +281,10 @@ pub fn start_server(
         .map(|endpoint| -> PyResult<Option<SocketAddr>> {
             match endpoint {
                 Some(s) => Ok(Some(
-                    SocketAddr::from_str(&s)
+                    s.to_socket_addrs()?
+                        // TODO: wireguard over IPv6 is not yet supported
+                        .filter(|s| s.is_ipv4())
+                        .next().ok_or(|| PyValueError::new_err("Endpoint Host not found"))
                         .map_err(|_| PyValueError::new_err("Invalid endpoint."))?
                 )),
                 None => Ok(None)
@@ -291,7 +293,7 @@ pub fn start_server(
         .collect::<PyResult<Vec<Option<SocketAddr>>>>()?;
 
     if peer_public_keys.len() != peer_endpoints.len() {
-        return Err(PyValueError::new_err("Peer public key and endpoint lists don't match"))
+        return Err(PyValueError::new_err("Peer public key and endpoint lists don't match"));
     }
 
     pyo3_asyncio::tokio::future_into_py(py, async move {
