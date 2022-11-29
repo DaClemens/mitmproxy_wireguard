@@ -1,7 +1,7 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use pyo3::{prelude::*, types::PyTuple};
 use pyo3::exceptions::PyValueError;
 use tokio::{
@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc::{self, channel, unbounded_channel},
     sync::Notify,
 };
-use x25519_dalek::{PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey};
 
 use crate::messages::TransportCommand;
 use crate::network::NetworkTask;
@@ -125,9 +125,9 @@ impl Server {
     pub async fn init(
         host: String,
         port: u16,
-        private_key: StaticSecret,
-        peer_public_keys: Vec<PublicKey>,
-        peer_endpoints: Vec<Option<SocketAddr>>,
+        private_key: String,
+        peer_public_keys: Vec<String>,
+        peer_endpoints: Vec<Option<String>>,
         py_tcp_handler: PyObject,
         py_udp_handler: PyObject,
     ) -> Result<Self> {
@@ -171,6 +171,38 @@ impl Server {
         // initialize barriers for handling graceful shutdown
         let (sd_trigger, _sd_watcher) = broadcast::channel(1);
         let sd_barrier = Arc::new(Notify::new());
+
+        // load keys
+        let private_key = string_to_key(private_key)?;
+        let peer_public_keys = peer_public_keys
+            .into_iter()
+            .map(string_to_key)
+            .collect::<PyResult<Vec<PublicKey>>>()?;
+
+        // resolve endpoints if any
+        let peer_endpoints = peer_endpoints
+            .into_iter()
+            .map(|endpoint| -> PyResult<Option<SocketAddr>> {
+                match endpoint {
+                    Some(s) => Ok(Some(
+                        s.to_socket_addrs()?
+                            // filter out IPv4 results if local socket is IPv4, and IPv6 if local
+                            // address is IPv6
+                            .filter(|a| local_addr.is_ipv4() && a.is_ipv4()
+                                || local_addr.is_ipv6() && a.is_ipv6())
+                            .next().ok_or(|| PyValueError::new_err("Endpoint Host not found"))
+                            .map_err(|_| PyValueError::new_err("Invalid endpoint."))?
+                    )),
+                    None => Ok(None)
+                }
+            })
+            .collect::<PyResult<Vec<Option<SocketAddr>>>>()?;
+
+        println!("{:?}", peer_endpoints);
+
+        if peer_public_keys.len() != peer_endpoints.len() {
+            return Err(anyhow!("Peer public key and endpoint lists don't match"));
+        }
 
         // initialize WireGuard server
         let mut wg_task_builder = WireGuardTaskBuilder::new(
@@ -269,33 +301,6 @@ pub fn start_server(
     handle_connection: PyObject,
     receive_datagram: PyObject,
 ) -> PyResult<&PyAny> {
-    let private_key = string_to_key(private_key)?;
-
-    let peer_public_keys = peer_public_keys
-        .into_iter()
-        .map(string_to_key)
-        .collect::<PyResult<Vec<PublicKey>>>()?;
-
-    let peer_endpoints = peer_endpoints
-        .into_iter()
-        .map(|endpoint| -> PyResult<Option<SocketAddr>> {
-            match endpoint {
-                Some(s) => Ok(Some(
-                    s.to_socket_addrs()?
-                        // TODO: wireguard over IPv6 is not yet supported
-                        .filter(|s| s.is_ipv4())
-                        .next().ok_or(|| PyValueError::new_err("Endpoint Host not found"))
-                        .map_err(|_| PyValueError::new_err("Invalid endpoint."))?
-                )),
-                None => Ok(None)
-            }
-        })
-        .collect::<PyResult<Vec<Option<SocketAddr>>>>()?;
-
-    if peer_public_keys.len() != peer_endpoints.len() {
-        return Err(PyValueError::new_err("Peer public key and endpoint lists don't match"));
-    }
-
     pyo3_asyncio::tokio::future_into_py(py, async move {
         let server = Server::init(
             host,
