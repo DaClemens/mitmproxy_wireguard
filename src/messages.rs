@@ -36,6 +36,10 @@ pub enum TransportEvent {
         dst_addr: SocketAddr,
         src_orig: SocketAddr,
     },
+    OtherPacketReceived {
+        data: Vec<u8>,
+        src_orig: SocketAddr,
+    }
 }
 
 /// Commands that are sent by the Python side to the TCP stack.
@@ -49,6 +53,9 @@ pub enum TransportCommand {
         data: Vec<u8>,
         src_addr: SocketAddr,
         dst_addr: SocketAddr,
+    },
+    SendOtherPacket {
+        data: Vec<u8>,
     },
     NewConnection {
         src_addr: SocketAddr,

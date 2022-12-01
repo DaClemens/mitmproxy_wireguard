@@ -83,6 +83,20 @@ impl Server {
         Ok(())
     }
 
+    /// Send an raw IP packet on the socket.
+    pub fn send_other_packet(
+        &self,
+        data: Vec<u8>,
+    ) -> PyResult<()> {
+        let cmd = TransportCommand::SendOtherPacket {
+            data,
+        };
+
+        self.event_tx.send(cmd).map_err(event_queue_unavailable)?;
+        Ok(())
+    }
+
+
     /// Request the WireGuard server to gracefully shut down.
     ///
     /// The server will stop accepting new connections on its UDP socket, but will flush pending
@@ -130,6 +144,7 @@ impl Server {
         peer_endpoints: Vec<Option<String>>,
         py_tcp_handler: PyObject,
         py_udp_handler: PyObject,
+        py_other_packet_handler: PyObject,
     ) -> Result<Self> {
         log::debug!("Initializing WireGuard server ...");
 
@@ -239,6 +254,7 @@ impl Server {
             smol_to_py_rx,
             py_tcp_handler,
             py_udp_handler,
+            py_other_packet_handler,
             sd_trigger.subscribe(),
         );
 
@@ -284,6 +300,7 @@ impl Drop for Server {
 /// - `peer_endpoints`: List of default endpoints for WireGuard peers. Each element must be present, but can be None.
 /// - `handle_connection`: A coroutine that will be called for each new `TcpStream`.
 /// - `receive_datagram`: A function that will be called for each received UDP datagram.
+/// - `receive_other`: A function that will be called for each received IP packet that is neither TCP or UDP.
 ///
 /// The `receive_datagram` function will be called with the following arguments:
 ///
@@ -300,6 +317,7 @@ pub fn start_server(
     peer_endpoints: Vec<Option<String>>,
     handle_connection: PyObject,
     receive_datagram: PyObject,
+    receive_other_packet: PyObject,
 ) -> PyResult<&PyAny> {
     pyo3_asyncio::tokio::future_into_py(py, async move {
         let server = Server::init(
@@ -310,6 +328,7 @@ pub fn start_server(
             peer_endpoints,
             handle_connection,
             receive_datagram,
+            receive_other_packet,
         )
         .await?;
         Ok(server)

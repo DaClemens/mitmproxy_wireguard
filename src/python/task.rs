@@ -14,6 +14,7 @@ pub struct PyInteropTask {
     smol_to_py_rx: mpsc::Receiver<TransportEvent>,
     py_tcp_handler: PyObject,
     py_udp_handler: PyObject,
+    py_other_packet_handler: PyObject,
     sd_watcher: BroadcastReceiver<()>,
 }
 
@@ -26,6 +27,7 @@ impl PyInteropTask {
         smol_to_py_rx: mpsc::Receiver<TransportEvent>,
         py_tcp_handler: PyObject,
         py_udp_handler: PyObject,
+        py_other_packet_handler: PyObject,
         sd_watcher: BroadcastReceiver<()>,
     ) -> Self {
         PyInteropTask {
@@ -35,6 +37,7 @@ impl PyInteropTask {
             smol_to_py_rx,
             py_tcp_handler,
             py_udp_handler,
+            py_other_packet_handler,
             sd_watcher,
         }
     }
@@ -110,6 +113,25 @@ impl PyInteropTask {
                                             bytes,
                                             socketaddr_to_py(py, src_addr),
                                             socketaddr_to_py(py, dst_addr),
+                                        ),
+                                    ) {
+                                        err.print(py);
+                                    }
+                                });
+                            },
+                            TransportEvent::OtherPacketReceived {
+                                data,
+                                ..
+                            } => {
+                                Python::with_gil(|py| {
+                                    let bytes: Py<PyBytes> = PyBytes::new(py, &data).into_py(py);
+
+                                    if let Err(err) = self.py_loop.call_method1(
+                                        py,
+                                        "call_soon_threadsafe",
+                                        (
+                                            self.py_other_packet_handler.as_ref(py),
+                                            bytes,
                                         ),
                                     ) {
                                         err.print(py);

@@ -78,7 +78,7 @@ impl NetworkIO {
                     "Received IP packet for unknown protocol: {}",
                     packet.transport_protocol()
                 );
-                Ok(())
+                self.receive_packet_other(packet, src_orig, permit)
             }
         }
     }
@@ -107,6 +107,21 @@ impl NetworkIO {
             data: udp_packet.payload_mut().to_vec(),
             src_addr,
             dst_addr,
+            src_orig,
+        };
+
+        permit.send(event);
+        Ok(())
+    }
+
+    fn receive_packet_other(
+        &mut self,
+        packet: IpPacket,
+        src_orig: SocketAddr,
+        permit: Permit<'_, TransportEvent>,
+    ) -> Result<()> {
+        let event = TransportEvent::OtherPacketReceived {
+            data: packet.into_inner().to_vec(),
             src_orig,
         };
 
@@ -292,6 +307,23 @@ impl NetworkIO {
         permit.send(NetworkCommand::SendPacket(ip_packet));
     }
 
+    fn send_other_packet(&mut self, data: Vec<u8>) {
+        let permit = match self.net_tx.try_reserve() {
+            Ok(p) => p,
+            Err(_) => {
+                log::debug!("Channel full, discarding other packet.");
+                return;
+            }
+        };
+
+        match IpPacket::try_from(data) {
+            Ok(p) => permit.send(NetworkCommand::SendPacket(p)),
+            Err(_) => {
+                log::debug!("Discarding invalid other packet.");
+            }
+        }
+    }
+
     fn handle_network_event(
         &mut self,
         event: NetworkEvent,
@@ -325,6 +357,11 @@ impl NetworkIO {
                 dst_addr,
             } => {
                 self.send_datagram(data, src_addr, dst_addr);
+            }
+            TransportCommand::SendOtherPacket {
+                data,
+            } => {
+                self.send_other_packet(data);
             }
             TransportCommand::NewConnection {
                 src_addr,
