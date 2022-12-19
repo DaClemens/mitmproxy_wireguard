@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use pyo3::{prelude::*, types::PyBytes};
-use tokio::sync::{broadcast::Receiver as BroadcastReceiver, mpsc};
+use tokio::sync::{broadcast::Receiver as BroadcastReceiver, mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 use super::{socketaddr_to_py, TcpStream};
 use crate::messages::{TransportCommand, TransportEvent};
@@ -43,7 +47,8 @@ impl PyInteropTask {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut tcp_connection_handler_tasks = Vec::new();
+        let task_counter = Arc::new(AtomicUsize::new(0));
+        let handler_tasks = Arc::new(Mutex::new(HashMap::new()));
 
         loop {
             tokio::select!(
@@ -71,7 +76,7 @@ impl PyInteropTask {
                                 };
 
                                 // spawn TCP connection handler coroutine
-                                if let Err(err) = Python::with_gil(|py| -> Result<(), PyErr> {
+                                match Python::with_gil(|py| -> Result<(usize, JoinHandle<()>), PyErr> {
                                     let stream = stream.into_py(py);
 
                                     // calling Python coroutine object yields an awaitable object
@@ -82,19 +87,27 @@ impl PyInteropTask {
                                         .copy_context(self.py_loop.as_ref(py).py())?;
                                     let future = pyo3_asyncio::into_future_with_locals(&locals, coro.as_ref(py))?;
 
+                                    let tasklist = Arc::clone(&handler_tasks);
+                                    let task_id = task_counter.fetch_add(1, Ordering::Relaxed);
+
                                     // run Future on a new Tokio task
-                                    let handle = tokio::spawn(async {
+                                    let handle = tokio::spawn(async move {
                                         if let Err(err) = future.await {
-                                            log::error!("TCP connection handler coroutine raised an exception:\n{}", err)}
+                                            log::error!("TCP connection handler coroutine raised an exception:\n{}", err)
                                         }
-                                    );
 
-                                    tcp_connection_handler_tasks.push(handle);
+                                        let mut tasks = tasklist.lock().await;
+                                        tasks.remove(&task_id);
+                                    });
 
-                                    Ok(())
+                                    Ok((task_id, handle))
                                 }) {
-                                    log::error!("Failed to spawn TCP connection handler coroutine:\n{}", err);
-                                };
+                                    Err(err) => log::error!("Failed to spawn TCP connection handler coroutine:\n{}", err),
+                                    Ok((task_id, handle)) => {
+                                        let mut tasks = handler_tasks.lock().await;
+                                        tasks.insert(task_id, handle);
+                                    }
+                                }
                             },
                             TransportEvent::DatagramReceived {
                                 data,
@@ -102,41 +115,73 @@ impl PyInteropTask {
                                 dst_addr,
                                 ..
                             } => {
-                                Python::with_gil(|py| {
+                                match Python::with_gil(|py| -> Result<(usize, JoinHandle<()>), PyErr> {
                                     let bytes: Py<PyBytes> = PyBytes::new(py, &data).into_py(py);
 
-                                    if let Err(err) = self.py_loop.call_method1(
-                                        py,
-                                        "call_soon_threadsafe",
-                                        (
-                                            self.py_udp_handler.as_ref(py),
-                                            bytes,
-                                            socketaddr_to_py(py, src_addr),
-                                            socketaddr_to_py(py, dst_addr),
-                                        ),
-                                    ) {
-                                        err.print(py);
+                                    let coro = self.py_udp_handler.call1(py, (bytes, socketaddr_to_py(py, src_addr), socketaddr_to_py(py, dst_addr)))?;
+
+                                    // convert Python awaitable into Rust Future
+                                    let locals = pyo3_asyncio::TaskLocals::new(self.py_loop.as_ref(py))
+                                        .copy_context(self.py_loop.as_ref(py).py())?;
+                                    let future = pyo3_asyncio::into_future_with_locals(&locals, coro.as_ref(py))?;
+
+                                    let tasklist = Arc::clone(&handler_tasks);
+                                    let task_id = task_counter.fetch_add(1, Ordering::Relaxed);
+
+                                    // run Future on a new Tokio task
+                                    let handle = tokio::spawn(async move {
+                                        if let Err(err) = future.await {
+                                            log::error!("UDP handler coroutine raised an exception:\n{}", err)
+                                        }
+
+                                        let mut tasks = tasklist.lock().await;
+                                        tasks.remove(&task_id);
+                                    });
+
+                                    Ok((task_id, handle))
+                                }) {
+                                    Err(err) => log::error!("Failed to spawn UDP handler coroutine:\n{}", err),
+                                    Ok((task_id, handle)) => {
+                                        let mut tasks = handler_tasks.lock().await;
+                                        tasks.insert(task_id, handle);
                                     }
-                                });
+                                }
                             },
                             TransportEvent::OtherPacketReceived {
                                 data,
                                 ..
                             } => {
-                                Python::with_gil(|py| {
+                                match Python::with_gil(|py| -> Result<(usize, JoinHandle<()>), PyErr> {
                                     let bytes: Py<PyBytes> = PyBytes::new(py, &data).into_py(py);
 
-                                    if let Err(err) = self.py_loop.call_method1(
-                                        py,
-                                        "call_soon_threadsafe",
-                                        (
-                                            self.py_other_packet_handler.as_ref(py),
-                                            bytes,
-                                        ),
-                                    ) {
-                                        err.print(py);
+                                    let coro = self.py_other_packet_handler.call1(py, (bytes, ))?;
+
+                                    // convert Python awaitable into Rust Future
+                                    let locals = pyo3_asyncio::TaskLocals::new(self.py_loop.as_ref(py))
+                                        .copy_context(self.py_loop.as_ref(py).py())?;
+                                    let future = pyo3_asyncio::into_future_with_locals(&locals, coro.as_ref(py))?;
+
+                                    let tasklist = Arc::clone(&handler_tasks);
+                                    let task_id = task_counter.fetch_add(1, Ordering::Relaxed);
+
+                                    // run Future on a new Tokio task
+                                    let handle = tokio::spawn(async move {
+                                        if let Err(err) = future.await {
+                                            log::error!("Other packet handler coroutine raised an exception:\n{}", err)
+                                        }
+
+                                        let mut tasks = tasklist.lock().await;
+                                        tasks.remove(&task_id);
+                                    });
+
+                                    Ok((task_id, handle))
+                                }) {
+                                    Err(err) => log::error!("Failed to spawn other packet handler coroutine:\n{}", err),
+                                    Ok((task_id, handle)) => {
+                                        let mut tasks = handler_tasks.lock().await;
+                                        tasks.insert(task_id, handle);
                                     }
-                                });
+                                }
                             },
                         }
                     } else {
@@ -149,16 +194,14 @@ impl PyInteropTask {
 
         log::debug!("Python interoperability task shutting down.");
 
+        let mut tasks = handler_tasks.lock().await;
         // clean up TCP connection handler coroutines
-        for handle in tcp_connection_handler_tasks {
+        for (_, handle) in &mut *tasks {
             if handle.is_finished() {
                 // Future is already finished: just await;
                 // Python exceptions are already logged by the wrapper coroutine
                 if let Err(err) = handle.await {
-                    log::warn!(
-                        "TCP connection handler coroutine could not be joined: {}",
-                        err
-                    );
+                    log::warn!("Python handler coroutine could not be joined: {}", err);
                 }
             } else {
                 // Future is not finished: abort tokio task
@@ -167,7 +210,7 @@ impl PyInteropTask {
                 if let Err(err) = handle.await {
                     if !err.is_cancelled() {
                         // JoinError was not caused by cancellation: coroutine panicked, log error
-                        log::error!("TCP connection handler coroutine panicked: {}", err);
+                        log::error!("Python handler coroutine panicked: {}", err);
                     }
                 }
             }

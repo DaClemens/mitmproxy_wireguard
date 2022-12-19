@@ -25,8 +25,8 @@ async def start_server(
     peer_public_keys: list[str],
     peer_endpoints: list[str|None],
     handle_connection: Callable[[TcpStream], Awaitable[None]],
-    receive_datagram: Callable[[bytes, tuple[str, int], tuple[str, int]], None],
-    receive_other_packet: Callable[[bytes], None],
+    receive_datagram: Callable[[bytes, tuple[str, int], tuple[str, int]], Awaitable[None]],
+    receive_other_packet: Callable[[bytes], Awaitable[None]],
 ) -> Server: ...
 def genkey() -> str: ...
 def pubkey(private_key: str) -> str: ...
