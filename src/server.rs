@@ -213,8 +213,6 @@ impl Server {
             })
             .collect::<PyResult<Vec<Option<SocketAddr>>>>()?;
 
-        println!("{:?}", peer_endpoints);
-
         if peer_public_keys.len() != peer_endpoints.len() {
             return Err(anyhow!("Peer public key and endpoint lists don't match"));
         }
