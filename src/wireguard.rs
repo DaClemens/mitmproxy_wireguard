@@ -328,7 +328,7 @@ impl WireGuardTask {
             .peers_by_ip
             .get(&packet.dst_ip())
             .or_else(|| {
-                log::warn!(
+                log::debug!(
                     "No peer found for IP {}, falling back to first peer.",
                     packet.dst_ip()
                 );
